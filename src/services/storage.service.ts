@@ -1,9 +1,12 @@
 /**
- * RapidRescue Secure Storage Service Interface
+ * RapidRescue Secure Storage Service
  *
- * Provides contract and fallback implementation for persisting tokens
- * and sensitive patient state securely.
+ * Persists sensitive authentication tokens and session credentials
+ * using native hardware-backed keystore/keychain via expo-secure-store.
+ * Falls back to in-memory store on platforms where SecureStore is unavailable.
  */
+
+import * as SecureStore from 'expo-secure-store';
 
 export interface IStorageService {
   getItem(key: string): Promise<string | null>;
@@ -19,28 +22,80 @@ export const STORAGE_KEYS = {
   ACTIVE_EMERGENCY_ID: 'rapidrescue_active_emergency_id',
 } as const;
 
-/**
- * Memory fallback storage for non-native environments or pre-initialization
- */
-class MemoryStorageService implements IStorageService {
-  private memoryStore = new Map<string, string>();
+class SecureStorageService implements IStorageService {
+  private memoryFallback = new Map<string, string>();
+  private isSecureAvailable: boolean | null = null;
+
+  private async checkAvailability(): Promise<boolean> {
+    if (this.isSecureAvailable !== null) {
+      return this.isSecureAvailable;
+    }
+    // Check if running in Node.js test environment or Web
+    const isNodeOrWeb =
+      typeof process !== 'undefined' && process.versions?.node != null && typeof window === 'undefined';
+    if (isNodeOrWeb) {
+      this.isSecureAvailable = false;
+      return false;
+    }
+
+    try {
+      this.isSecureAvailable = await SecureStore.isAvailableAsync();
+    } catch {
+      this.isSecureAvailable = false;
+    }
+    return this.isSecureAvailable;
+  }
 
   async getItem(key: string): Promise<string | null> {
-    return this.memoryStore.get(key) ?? null;
+    const isAvailable = await this.checkAvailability();
+    if (!isAvailable) {
+      return this.memoryFallback.get(key) ?? null;
+    }
+    try {
+      return await SecureStore.getItemAsync(key);
+    } catch (error) {
+      console.warn(`[SecureStore] Error reading key "${key}":`, error);
+      return this.memoryFallback.get(key) ?? null;
+    }
   }
 
   async setItem(key: string, value: string): Promise<void> {
-    this.memoryStore.set(key, value);
+    const isAvailable = await this.checkAvailability();
+    if (!isAvailable) {
+      this.memoryFallback.set(key, value);
+      return;
+    }
+    try {
+      await SecureStore.setItemAsync(key, value, {
+        keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+      });
+    } catch (error) {
+      console.warn(`[SecureStore] Error writing key "${key}":`, error);
+      this.memoryFallback.set(key, value);
+    }
   }
 
   async removeItem(key: string): Promise<void> {
-    this.memoryStore.delete(key);
+    const isAvailable = await this.checkAvailability();
+    this.memoryFallback.delete(key);
+    if (!isAvailable) {
+      return;
+    }
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch (error) {
+      console.warn(`[SecureStore] Error removing key "${key}":`, error);
+    }
   }
 
   async clearAll(): Promise<void> {
-    this.memoryStore.clear();
+    await this.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+    await this.removeItem(STORAGE_KEYS.REFRESH_TOKEN);
+    await this.removeItem(STORAGE_KEYS.PATIENT_PROFILE);
+    await this.removeItem(STORAGE_KEYS.ACTIVE_EMERGENCY_ID);
+    this.memoryFallback.clear();
   }
 }
 
-export const storageService: IStorageService = new MemoryStorageService();
+export const storageService: IStorageService = new SecureStorageService();
 export default storageService;

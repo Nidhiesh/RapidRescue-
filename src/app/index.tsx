@@ -1,8 +1,9 @@
 /**
- * RapidRescue Patient App - Phase 1 Splash & Initialization Screen
+ * RapidRescue Splash & Session Restoration Screen
  *
- * Displays the initial loading/splash view with emergency brand identity,
- * environment diagnostics, and architecture readiness status.
+ * Checks secure hardware keystore on boot:
+ * - If valid token & profile found -> routes to Patient Home
+ * - If unauthenticated or token expired -> routes to Login
  */
 
 import React, { useEffect, useState } from 'react';
@@ -10,95 +11,89 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
+import { useAuth } from '@/hooks/useAuth';
 import { BrandHeader } from '@/components/common/BrandHeader';
-import { SystemCheckCard } from '@/components/common/SystemCheckCard';
 import { StatusBadge } from '@/components/common/StatusBadge';
+import { PulseDot } from '@/components/common/PulseDot';
 import { Config } from '@/config/env';
 
 export default function SplashScreen() {
-  const { colors, typography, spacing, borderRadius } = useTheme();
-  const [initStage, setInitStage] = useState<'checking' | 'ready'>('checking');
-  const [currentStep, setCurrentStep] = useState('Verifying environment configuration...');
+  const router = useRouter();
+  const { colors, borderRadius } = useTheme();
+  const { status, isAuthenticated } = useAuth();
+  const [minSplashElapsed, setMinSplashElapsed] = useState(false);
 
   useEffect(() => {
-    const timer1 = setTimeout(() => {
-      setCurrentStep('Initializing REST client and WebSocket contracts...');
+    // Ensure splash is visible for at least 700ms for smooth visual experience
+    const timer = setTimeout(() => {
+      setMinSplashElapsed(true);
     }, 700);
 
-    const timer2 = setTimeout(() => {
-      setCurrentStep('Architecture foundation ready.');
-      setInitStage('ready');
-    }, 1400);
-
-    return () => {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-    };
+    return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!minSplashElapsed) return;
+
+    if (status === 'authenticated' && isAuthenticated) {
+      router.replace('/(patient)/home');
+    } else if (status === 'unauthenticated' || status === 'error') {
+      router.replace('/(auth)/login');
+    }
+  }, [minSplashElapsed, status, isAuthenticated, router]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
+      <View style={styles.content}>
         {/* Top Environment Ribbon */}
         <View style={styles.topRibbon}>
           <StatusBadge
-            label={`PATIENT APP • ${Config.env.toUpperCase()}`}
+            label={Config.env.toUpperCase()}
             variant={Config.isProduction ? 'success' : 'info'}
-            icon={<Ionicons name="shield-checkmark" size={12} color={Config.isProduction ? colors.success : colors.accent} />}
           />
-          <Text style={[styles.versionText, { color: colors.textMuted }]}>
-            SDK 57 • Expo Router
-          </Text>
         </View>
 
-        {/* Hero Brand Header */}
-        <BrandHeader subtitle="Instant Emergency Medical Dispatch & Live Tracking" />
+        {/* Brand Display */}
+        <View style={styles.brandWrapper}>
+          <BrandHeader subtitle="Instant Emergency Medical Dispatch" />
+        </View>
 
-        {/* Loading / Status Bar */}
+        {/* Session Restoration Indicator */}
         <View
           style={[
-            styles.statusBanner,
+            styles.statusCard,
             {
-              backgroundColor: colors.backgroundElement,
+              backgroundColor: colors.card,
               borderColor: colors.cardBorder,
               borderRadius: borderRadius.md,
             },
           ]}
         >
           <View style={styles.statusRow}>
-            {initStage === 'checking' ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-            )}
+            <ActivityIndicator size="small" color={colors.primary} />
             <Text style={[styles.statusText, { color: colors.text }]}>
-              {currentStep}
+              {status === 'restoring_session'
+                ? 'Validating secure credentials...'
+                : status === 'authenticated'
+                ? 'Session verified! Opening portal...'
+                : 'Session check complete.'}
             </Text>
           </View>
         </View>
 
-        {/* Diagnostic Architecture Overview */}
-        <SystemCheckCard />
-
-        {/* Phase Notice Footer */}
+        {/* Footer */}
         <View style={styles.footer}>
-          <Text style={[styles.footerText, { color: colors.textSecondary }]}>
-            Phase 1 Completed: Project Foundation & Architecture.
-          </Text>
-          <Text style={[styles.footerSubText, { color: colors.textMuted }]}>
-            Ready for Phase 2: Authentication & Secure Token Storage.
+          <PulseDot color={colors.success} size={6} />
+          <Text style={[styles.footerText, { color: colors.textMuted }]}>
+            Secure Storage Protected
           </Text>
         </View>
-      </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -107,51 +102,41 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  scrollContent: {
-    paddingBottom: 32,
-    flexGrow: 1,
+  content: {
+    flex: 1,
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingVertical: 20,
   },
   topRibbon: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    marginBottom: 4,
+    alignItems: 'flex-end',
   },
-  versionText: {
-    fontSize: 11,
-    fontWeight: '500',
+  brandWrapper: {
+    flex: 1,
+    justifyContent: 'center',
   },
-  statusBanner: {
-    marginHorizontal: 16,
-    marginVertical: 10,
-    padding: 12,
+  statusCard: {
+    padding: 16,
     borderWidth: 1,
+    marginBottom: 20,
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   statusText: {
     fontSize: 13,
     fontWeight: '500',
   },
   footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 16,
-    paddingHorizontal: 20,
-    gap: 4,
+    gap: 8,
   },
   footerText: {
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  footerSubText: {
     fontSize: 11,
-    fontWeight: '400',
-    textAlign: 'center',
+    fontWeight: '500',
   },
 });
