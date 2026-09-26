@@ -1,26 +1,22 @@
 /**
- * RapidRescue Emergency Dispatch Service
+ * RapidRescue Emergency Dispatch Service (Phase 4)
  *
- * Manages automated emergency request dispatching:
+ * Requirements:
  * - Duplicate SOS prevention: locks out concurrent emergency dispatches
  * - Bounded retry strategy for network/transient failures (max 3 retries with backoff)
  * - Safe internal holding of front & rear photos and GPS coordinates
- * - Adheres strictly to backend contract isolation rules:
- *   Does NOT invent backend fields or silently send two photos into a single-photo contract.
+ * - Adheres strictly to backend contract isolation:
+ *   Does NOT find nearest ambulance, select driver, calculate distance, or decide driver priority
+ *   (Those belong strictly to the backend/dispatch system).
+ * - Typed data model: EmergencyCaptureData (no `any`)
  */
 
-import { Config } from '@/config/env';
 import { CapturedLocation, ReverseGeocodedAddress } from '@/types/location.types';
-import { CameraServiceResult } from '@/types/camera.types';
-import { EmergencyRecord, EmergencyStatus } from '@/types/emergency.types';
-
-export interface EmergencyEvidencePayload {
-  frontPhoto: CameraServiceResult | null;
-  rearPhoto: CameraServiceResult | null;
-  location: CapturedLocation | null;
-  address: ReverseGeocodedAddress | null;
-  notes?: string;
-}
+import {
+  EmergencyCaptureData,
+  EmergencyRecord,
+  EmergencyStatus,
+} from '@/types/emergency.types';
 
 export type DispatchStep =
   | 'idle'
@@ -44,7 +40,9 @@ const BASE_RETRY_DELAY_MS = 1000;
 class EmergencyService {
   private activeEmergency: EmergencyRecord | null = null;
   private isDispatching: boolean = false;
-  private currentEvidence: EmergencyEvidencePayload | null = null;
+  private capturedData: EmergencyCaptureData | null = null;
+  private cachedLocation: CapturedLocation | null = null;
+  private cachedAddress: ReverseGeocodedAddress | null = null;
 
   /**
    * Checks whether an emergency request is actively in-flight or unresolved.
@@ -60,6 +58,38 @@ class EmergencyService {
   }
 
   /**
+   * Stores pre-fetched GPS location to be available immediately during emergency flow.
+   */
+  setCachedLocation(
+    location: CapturedLocation,
+    address: ReverseGeocodedAddress | null = null
+  ): void {
+    this.cachedLocation = location;
+    this.cachedAddress = address;
+  }
+
+  getCachedLocation(): {
+    location: CapturedLocation | null;
+    address: ReverseGeocodedAddress | null;
+  } {
+    return {
+      location: this.cachedLocation,
+      address: this.cachedAddress,
+    };
+  }
+
+  /**
+   * Stores full captured emergency data.
+   */
+  setCapturedData(data: EmergencyCaptureData): void {
+    this.capturedData = data;
+  }
+
+  getCapturedData(): EmergencyCaptureData | null {
+    return this.capturedData;
+  }
+
+  /**
    * Returns current active emergency record if one exists.
    */
   getActiveEmergency(): EmergencyRecord | null {
@@ -72,7 +102,9 @@ class EmergencyService {
   clearActiveEmergency(): void {
     this.activeEmergency = null;
     this.isDispatching = false;
-    this.currentEvidence = null;
+    this.capturedData = null;
+    this.cachedLocation = null;
+    this.cachedAddress = null;
   }
 
   /**
@@ -81,7 +113,7 @@ class EmergencyService {
    * Prevents duplicate dispatch if an emergency is already in progress.
    */
   async autoDispatchEmergency(
-    evidence: EmergencyEvidencePayload,
+    data: EmergencyCaptureData,
     patientId: string = 'device_anonymous_patient'
   ): Promise<DispatchOutcome> {
     if (this.hasActiveEmergency()) {
@@ -93,7 +125,7 @@ class EmergencyService {
     }
 
     this.isDispatching = true;
-    this.currentEvidence = evidence;
+    this.capturedData = data;
 
     let attempt = 0;
     let lastError = 'Failed to submit emergency dispatch';
@@ -101,7 +133,7 @@ class EmergencyService {
     while (attempt < MAX_DISPATCH_RETRIES) {
       attempt++;
       try {
-        const record = await this.performDispatchAttempt(evidence, patientId, attempt);
+        const record = await this.performDispatchAttempt(data, patientId, attempt);
         this.activeEmergency = record;
         this.isDispatching = false;
         return {
@@ -126,21 +158,17 @@ class EmergencyService {
   }
 
   /**
-   * Internal single dispatch attempt.
-   * Notice: Existing backend contract only supports single photoUri.
-   * Both photos are safely kept in internal evidence state.
+   * Internal single dispatch preparation.
+   * Prepares the emergency data without executing backend driver assignment logic.
    */
   private async performDispatchAttempt(
-    evidence: EmergencyEvidencePayload,
+    data: EmergencyCaptureData,
     patientId: string,
     attemptNumber: number
   ): Promise<EmergencyRecord> {
-    // In local development or mock mode, generate the immediate emergency record
-    const timestamp = new Date().toISOString();
-    const lat = evidence.location?.latitude ?? 0;
-    const lng = evidence.location?.longitude ?? 0;
+    const timestamp = data.timestamp || new Date().toISOString();
 
-    // Simulate network latency (500ms)
+    // Simulate network transmission latency (500ms)
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const record: EmergencyRecord = {
@@ -149,21 +177,18 @@ class EmergencyService {
       status: EmergencyStatus.SEARCHING,
       location: {
         coords: {
-          latitude: lat,
-          longitude: lng,
-          accuracy: evidence.location?.accuracy ?? undefined,
+          latitude: data.latitude,
+          longitude: data.longitude,
+          accuracy: data.accuracy ?? undefined,
           timestamp: Date.now(),
         },
-        address: evidence.address
+        address: data.address
           ? {
-              formattedAddress: evidence.address.formattedAddress,
-              city: evidence.address.city ?? undefined,
-              region: evidence.address.region ?? undefined,
-              country: evidence.address.country ?? undefined,
+              formattedAddress: data.address,
             }
           : undefined,
       },
-      photoUrl: evidence.frontPhoto?.uri ?? undefined,
+      photoUrl: data.frontPhotoUri,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -175,7 +200,10 @@ class EmergencyService {
    * Cancels the active emergency.
    */
   async cancelEmergency(reason?: string): Promise<boolean> {
-    if (!this.activeEmergency) return true;
+    if (!this.activeEmergency) {
+      this.clearActiveEmergency();
+      return true;
+    }
 
     this.activeEmergency = {
       ...this.activeEmergency,

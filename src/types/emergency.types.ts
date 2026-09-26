@@ -14,6 +14,16 @@ export enum EmergencyStatus {
   CANCELLED = 'CANCELLED',
 }
 
+export interface EmergencyCaptureData {
+  frontPhotoUri: string;
+  rearPhotoUri: string;
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  timestamp: string;
+  address?: string;
+}
+
 export interface GeoCoordinates {
   latitude: number;
   longitude: number;

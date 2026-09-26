@@ -1,10 +1,17 @@
 /**
- * RapidRescue Automatic Emergency Status Screen
+ * RapidRescue Emergency Processing & Status Screen (Phase 4)
  *
- * Implements the single-tap automated emergency lifecycle:
- * SOS Tapped -> Auto GPS + Auto Front Photo + Auto Rear Photo -> Auto Dispatch -> Live Status
- *
- * Zero manual confirmations. Zero manual shutter presses.
+ * Requirements:
+ * - Displays:
+ *   🚨 EMERGENCY ACTIVE
+ *   ✓ Location detected
+ *   ✓ Front photo captured
+ *   ✓ Rear photo captured
+ *   Then: "Preparing ambulance request..."
+ * - Patient does NOT press any manual button to dispatch
+ * - Typed data model: EmergencyCaptureData (no `any`)
+ * - Error handling for Camera/GPS/Network failure with safe emergency fallback message
+ * - Safe cancellation
  */
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
@@ -21,40 +28,28 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { CameraView } from 'expo-camera';
 import { useTheme } from '@/hooks/useTheme';
 import { useLocation } from '@/hooks/useLocation';
-import { useAutoEmergencyCapture } from '@/hooks/useAutoEmergencyCapture';
 import { locationService } from '@/services/location.service';
 import {
   emergencyService,
-  EmergencyEvidencePayload,
   DispatchOutcome,
 } from '@/services/emergency.service';
 import { PulseDot } from '@/components/common/PulseDot';
 import { StatusBadge } from '@/components/common/StatusBadge';
-import { EmergencyRecord } from '@/types/emergency.types';
+import {
+  EmergencyCaptureData,
+  EmergencyRecord,
+} from '@/types/emergency.types';
 
 export default function EmergencyStatusScreen() {
   const router = useRouter();
   const { colors, borderRadius } = useTheme();
   const params = useLocalSearchParams<{ frontPhotoUri?: string; rearPhotoUri?: string }>();
 
-  const passedFrontPhoto = params.frontPhotoUri
-    ? {
-        uri: params.frontPhotoUri,
-        timestamp: new Date().toISOString(),
-        facing: 'front' as const,
-      }
-    : null;
-
-  const passedRearPhoto = params.rearPhotoUri
-    ? {
-        uri: params.rearPhotoUri,
-        timestamp: new Date().toISOString(),
-        facing: 'back' as const,
-      }
-    : null;
+  // Photos passed from automated camera screen
+  const frontPhotoUri = params.frontPhotoUri ?? null;
+  const rearPhotoUri = params.rearPhotoUri ?? null;
 
   // GPS Location Hook
   const {
@@ -68,8 +63,8 @@ export default function EmergencyStatusScreen() {
 
   // Dispatch state
   const [dispatchStatus, setDispatchStatus] = useState<
-    'gathering' | 'sending' | 'dispatched' | 'failed'
-  >('gathering');
+    'preparing' | 'sending' | 'dispatched' | 'failed'
+  >('preparing');
   const [dispatchRecord, setDispatchRecord] = useState<EmergencyRecord | null>(null);
   const [dispatchErrorMessage, setDispatchErrorMessage] = useState<string | null>(null);
 
@@ -77,41 +72,27 @@ export default function EmergencyStatusScreen() {
   const dispatchAttempted = useRef(false);
   const isMounted = useRef(true);
 
-  // Camera Hook (fallback only if photos were not passed via route)
-  const {
-    cameraRef,
-    facing,
-    stage: cameraStage,
-    permissionStatus: cameraPermission,
-    frontPhoto,
-    rearPhoto,
-    cameraWarning,
-    isComplete: isCameraComplete,
-    onCameraReady,
-    startAutoCapture,
-  } = useAutoEmergencyCapture();
-
-  const effectiveFrontPhoto = passedFrontPhoto ?? frontPhoto;
-  const effectiveRearPhoto = passedRearPhoto ?? rearPhoto;
-  const cameraResolved = passedFrontPhoto && passedRearPhoto ? true : isCameraComplete;
-
-  // 1. Kick off GPS (and camera fallback only if no photos provided)
+  // 1. Kick off location if not already cached
   useEffect(() => {
     isMounted.current = true;
-    captureLocation();
+    const cached = emergencyService.getCachedLocation();
 
-    if (!passedFrontPhoto || !passedRearPhoto) {
-      startAutoCapture();
+    if (!cached.location) {
+      captureLocation();
     }
 
     return () => {
       isMounted.current = false;
     };
-  }, [passedFrontPhoto, passedRearPhoto, startAutoCapture, captureLocation]);
+  }, [captureLocation]);
 
-  // 2. Trigger Automatic Dispatch once Location & Camera stages have resolved
-  const locationResolved = !isFetchingLocation;
+  // Read effective location (from cache or live hook)
+  const cached = emergencyService.getCachedLocation();
+  const effectiveLocation = cached.location ?? location;
+  const effectiveAddress = cached.address ?? address;
+  const locationResolved = effectiveLocation !== null || (!isFetchingLocation && locationError !== null);
 
+  // 2. Trigger Automatic Dispatch once Location & Photos are ready
   const triggerAutoDispatch = useCallback(async () => {
     if (dispatchAttempted.current || !isMounted.current) return;
     dispatchAttempted.current = true;
@@ -119,14 +100,18 @@ export default function EmergencyStatusScreen() {
     setDispatchStatus('sending');
     setDispatchErrorMessage(null);
 
-    const evidence: EmergencyEvidencePayload = {
-      frontPhoto: effectiveFrontPhoto,
-      rearPhoto: effectiveRearPhoto,
-      location,
-      address,
+    // 7. Typed emergency capture object (no `any`)
+    const emergencyData: EmergencyCaptureData = {
+      frontPhotoUri: frontPhotoUri ?? '',
+      rearPhotoUri: rearPhotoUri ?? '',
+      latitude: effectiveLocation?.latitude ?? 0,
+      longitude: effectiveLocation?.longitude ?? 0,
+      accuracy: effectiveLocation?.accuracy ?? null,
+      timestamp: effectiveLocation?.timestamp ?? new Date().toISOString(),
+      address: effectiveAddress?.formattedAddress,
     };
 
-    const outcome: DispatchOutcome = await emergencyService.autoDispatchEmergency(evidence);
+    const outcome: DispatchOutcome = await emergencyService.autoDispatchEmergency(emergencyData);
 
     if (!isMounted.current) return;
 
@@ -137,15 +122,15 @@ export default function EmergencyStatusScreen() {
       setDispatchStatus('failed');
       setDispatchErrorMessage(outcome.error ?? 'Emergency dispatch failed. Please retry.');
     }
-  }, [effectiveFrontPhoto, effectiveRearPhoto, location, address]);
+  }, [frontPhotoUri, rearPhotoUri, effectiveLocation, effectiveAddress]);
 
   useEffect(() => {
-    if (locationResolved && cameraResolved && !dispatchAttempted.current) {
+    if (locationResolved && !dispatchAttempted.current) {
       triggerAutoDispatch();
     }
-  }, [locationResolved, cameraResolved, triggerAutoDispatch]);
+  }, [locationResolved, triggerAutoDispatch]);
 
-  // Manual retry only if dispatch failed
+  // Controlled Retry if dispatch failed
   const handleManualRetry = () => {
     dispatchAttempted.current = false;
     triggerAutoDispatch();
@@ -190,40 +175,17 @@ export default function EmergencyStatusScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Main Status Announcement */}
         <Text style={[styles.headline, { color: colors.text }]}>
           {dispatchStatus === 'dispatched'
-            ? 'Ambulance Dispatched'
-            : 'Capturing Emergency Information…'}
+            ? 'Ambulance Request Dispatched'
+            : 'Preparing ambulance request...'}
         </Text>
         <Text style={[styles.subheadline, { color: colors.textSecondary }]}>
           {dispatchStatus === 'dispatched'
-            ? 'A medical response team is being allocated to your location.'
-            : 'Evidence and GPS coordinates are being gathered automatically.'}
+            ? 'Emergency response coordinators have received your location and photos.'
+            : 'Gathering emergency data automatically. No action needed.'}
         </Text>
-
-        {/* Live Camera Viewfinder (Only if photos were not passed from camera screen) */}
-        {!passedFrontPhoto && !isCameraComplete && (
-          <View
-            style={[
-              styles.cameraFrame,
-              { backgroundColor: '#000000', borderRadius: borderRadius.md },
-            ]}
-          >
-            <CameraView
-              ref={cameraRef}
-              style={StyleSheet.absoluteFill}
-              facing={facing}
-              mode="picture"
-              onCameraReady={onCameraReady}
-            />
-            <View style={styles.cameraOverlayBadge}>
-              <ActivityIndicator size="small" color="#FFFFFF" />
-              <Text style={styles.cameraOverlayText}>
-                Securing {facing === 'front' ? 'Front' : 'Rear'} Photo Evidence…
-              </Text>
-            </View>
-          </View>
-        )}
 
         {/* Status Checklist Cards */}
         <View style={styles.stepsContainer}>
@@ -239,9 +201,9 @@ export default function EmergencyStatusScreen() {
             ]}
           >
             <View style={styles.stepIconWrapper}>
-              {isFetchingLocation ? (
+              {isFetchingLocation && !effectiveLocation ? (
                 <ActivityIndicator size="small" color={colors.primary} />
-              ) : location ? (
+              ) : effectiveLocation ? (
                 <Ionicons name="checkmark-circle" size={22} color={colors.success} />
               ) : (
                 <Ionicons name="warning" size={22} color={colors.amber} />
@@ -249,24 +211,24 @@ export default function EmergencyStatusScreen() {
             </View>
             <View style={styles.stepContent}>
               <Text style={[styles.stepTitle, { color: colors.text }]}>
-                {isFetchingLocation
+                {isFetchingLocation && !effectiveLocation
                   ? 'Detecting GPS location…'
-                  : location
+                  : effectiveLocation
                   ? 'Location detected'
-                  : 'Location access unavailable'}
+                  : 'GPS location unavailable'}
               </Text>
-              {location && (
+              {effectiveLocation && (
                 <Text style={[styles.stepDetail, { color: colors.textSecondary }]}>
-                  {locationService.formatCoordinates(location.latitude, location.longitude)} (
-                  {locationService.formatAccuracy(location.accuracy)})
+                  {locationService.formatCoordinates(effectiveLocation.latitude, effectiveLocation.longitude)} (
+                  {locationService.formatAccuracy(effectiveLocation.accuracy)})
                 </Text>
               )}
-              {address && (
+              {effectiveAddress && (
                 <Text style={[styles.stepDetailSub, { color: colors.textMuted }]}>
-                  {address.formattedAddress}
+                  {effectiveAddress.formattedAddress}
                 </Text>
               )}
-              {locationErrorMessage && (
+              {locationErrorMessage && !effectiveLocation && (
                 <Text style={[styles.stepWarning, { color: colors.primary }]}>
                   {locationErrorMessage}
                 </Text>
@@ -286,35 +248,25 @@ export default function EmergencyStatusScreen() {
             ]}
           >
             <View style={styles.stepIconWrapper}>
-              {effectiveFrontPhoto ? (
+              {frontPhotoUri ? (
                 <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-              ) : cameraStage === 'front_preparing' || cameraStage === 'front_capturing' ? (
-                <ActivityIndicator size="small" color={colors.primary} />
-              ) : cameraPermission === 'denied' || isCameraComplete ? (
-                <Ionicons name="warning" size={22} color={colors.amber} />
               ) : (
-                <Ionicons name="ellipse-outline" size={22} color={colors.textMuted} />
+                <Ionicons name="warning" size={22} color={colors.amber} />
               )}
             </View>
             <View style={styles.stepContent}>
               <Text style={[styles.stepTitle, { color: colors.text }]}>
-                {effectiveFrontPhoto
-                  ? 'Front photo captured'
-                  : cameraStage === 'front_preparing' || cameraStage === 'front_capturing'
-                  ? 'Capturing front photo…'
-                  : cameraPermission === 'denied'
-                  ? 'Front camera permission denied'
-                  : 'Awaiting front camera…'}
+                {frontPhotoUri ? 'Front photo captured' : 'Front photo unavailable'}
               </Text>
-              {effectiveFrontPhoto && (
+              {frontPhotoUri && (
                 <Text style={[styles.stepDetail, { color: colors.textSecondary }]}>
                   Patient emergency portrait secured
                 </Text>
               )}
             </View>
-            {effectiveFrontPhoto && (
+            {frontPhotoUri && (
               <Image
-                source={{ uri: effectiveFrontPhoto.uri }}
+                source={{ uri: frontPhotoUri }}
                 style={[styles.thumbnail, { borderRadius: borderRadius.sm }]}
               />
             )}
@@ -332,35 +284,25 @@ export default function EmergencyStatusScreen() {
             ]}
           >
             <View style={styles.stepIconWrapper}>
-              {effectiveRearPhoto ? (
+              {rearPhotoUri ? (
                 <Ionicons name="checkmark-circle" size={22} color={colors.success} />
-              ) : cameraStage === 'rear_preparing' || cameraStage === 'rear_capturing' ? (
-                <ActivityIndicator size="small" color={colors.primary} />
-              ) : cameraPermission === 'denied' || isCameraComplete ? (
-                <Ionicons name="warning" size={22} color={colors.amber} />
               ) : (
-                <Ionicons name="ellipse-outline" size={22} color={colors.textMuted} />
+                <Ionicons name="warning" size={22} color={colors.amber} />
               )}
             </View>
             <View style={styles.stepContent}>
               <Text style={[styles.stepTitle, { color: colors.text }]}>
-                {effectiveRearPhoto
-                  ? 'Rear photo captured'
-                  : cameraStage === 'rear_preparing' || cameraStage === 'rear_capturing'
-                  ? 'Capturing rear photo…'
-                  : cameraPermission === 'denied'
-                  ? 'Rear camera permission denied'
-                  : 'Awaiting rear camera…'}
+                {rearPhotoUri ? 'Rear photo captured' : 'Rear photo unavailable'}
               </Text>
-              {effectiveRearPhoto && (
+              {rearPhotoUri && (
                 <Text style={[styles.stepDetail, { color: colors.textSecondary }]}>
                   Surroundings evidence secured
                 </Text>
               )}
             </View>
-            {effectiveRearPhoto && (
+            {rearPhotoUri && (
               <Image
-                source={{ uri: effectiveRearPhoto.uri }}
+                source={{ uri: rearPhotoUri }}
                 style={[styles.thumbnail, { borderRadius: borderRadius.sm }]}
               />
             )}
@@ -391,7 +333,7 @@ export default function EmergencyStatusScreen() {
             <View style={styles.stepContent}>
               <Text style={[styles.stepTitle, { color: colors.text }]}>
                 {dispatchStatus === 'sending'
-                  ? 'Sending emergency request…'
+                  ? 'Preparing ambulance request…'
                   : dispatchStatus === 'dispatched'
                   ? 'Ambulance request sent'
                   : dispatchStatus === 'failed'
@@ -427,16 +369,35 @@ export default function EmergencyStatusScreen() {
             <View style={styles.dispatchRow}>
               <PulseDot color={colors.primary} size={10} />
               <Text style={[styles.dispatchTitle, { color: colors.text }]}>
-                Searching for nearest ambulance…
+                Dispatching nearest ambulance…
               </Text>
             </View>
             <Text style={[styles.dispatchSubtitle, { color: colors.textSecondary }]}>
-              Dispatch system is locating the nearest unit and calculating optimal route.
+              RapidRescue dispatch system is processing your emergency ticket and notifying available medical units.
             </Text>
             <View style={styles.badgeRow}>
               <StatusBadge label="HIGH PRIORITY" variant="emergency" />
-              <StatusBadge label="GPS BROADCASTING" variant="success" />
+              <StatusBadge label="GPS TRANSMITTING" variant="success" />
             </View>
+          </View>
+        )}
+
+        {/* Emergency Fallback Message if Location or Camera missing */}
+        {(!effectiveLocation || !frontPhotoUri || !rearPhotoUri) && (
+          <View
+            style={[
+              styles.fallbackCard,
+              {
+                backgroundColor: colors.backgroundElement,
+                borderColor: colors.cardBorder,
+                borderRadius: borderRadius.md,
+              },
+            ]}
+          >
+            <Ionicons name="information-circle-outline" size={18} color={colors.accent} />
+            <Text style={[styles.fallbackText, { color: colors.textSecondary }]}>
+              Emergency Fallback: Dispatch is transmitting available device and telemetry data to ensure emergency response is not delayed.
+            </Text>
           </View>
         )}
 
@@ -517,25 +478,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 20,
   },
-  cameraFrame: {
-    width: '100%',
-    height: 140,
-    overflow: 'hidden',
-    marginBottom: 16,
-    justifyContent: 'flex-end',
-  },
-  cameraOverlayBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 8,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  cameraOverlayText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
-  },
   stepsContainer: {
     gap: 10,
   },
@@ -598,6 +540,19 @@ const styles = StyleSheet.create({
   badgeRow: {
     flexDirection: 'row',
     gap: 8,
+  },
+  fallbackCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 12,
+    borderWidth: 1,
+    marginTop: 14,
+  },
+  fallbackText: {
+    fontSize: 12,
+    flex: 1,
+    lineHeight: 17,
   },
   retryButton: {
     flexDirection: 'row',
