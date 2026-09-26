@@ -40,12 +40,10 @@ export default function SplashScreen() {
   useEffect(() => {
     if (!minSplashElapsed) return;
 
-    if (status === 'authenticated' && isAuthenticated) {
-      router.replace('/(patient)/home');
-    } else if (status === 'unauthenticated' || status === 'error') {
-      router.replace('/(auth)/login');
-    }
-  }, [minSplashElapsed, status, isAuthenticated, router]);
+    // Emergency UX Isolation: Emergency assistance is directly accessible without mandatory login.
+    // Patient session will restore in background if existing credentials exist.
+    router.replace('/(patient)/home');
+  }, [minSplashElapsed, router]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>

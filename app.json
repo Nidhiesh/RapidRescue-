@@ -33,7 +33,20 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "RapidRescue needs camera access to capture your photo for emergency identification."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RapidRescue needs your location to dispatch emergency services to you.",
+          "locationWhenInUsePermission": "RapidRescue needs your location to dispatch emergency services to you."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false,

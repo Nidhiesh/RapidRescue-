@@ -1,11 +1,15 @@
 /**
- * RapidRescue Patient Home Screen
+ * RapidRescue Patient Emergency Home Screen
  *
- * Authenticated patient dashboard displaying:
- * - Patient emergency profile & blood group
- * - Emergency Contact card
- * - Primary Emergency SOS button (Entry point for Phase 3)
- * - Secure session management & Logout
+ * Requirements:
+ * - Single manual action: Tap the SOS button ONCE
+ * - No login, registration, or password entry required for emergency assistance
+ * - Directly starts the entire automated emergency process
+ * - Obvious UI:
+ *   Before SOS:
+ *   🚨 EMERGENCY
+ *   Tap once for immediate ambulance assistance
+ * - Duplicate SOS prevention: prevents duplicate requests while one is active
  */
 
 import React, { useState } from 'react';
@@ -22,43 +26,42 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuth } from '@/hooks/useAuth';
+import { emergencyService } from '@/services/emergency.service';
 import { PulseDot } from '@/components/common/PulseDot';
 import { StatusBadge } from '@/components/common/StatusBadge';
 
 export default function PatientHomeScreen() {
   const router = useRouter();
-  const { colors, borderRadius, spacing } = useTheme();
-  const { patient, logout } = useAuth();
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const { colors, borderRadius } = useTheme();
+  const { patient, isAuthenticated, logout } = useAuth();
+  const [isTriggering, setIsTriggering] = useState(false);
 
-  const handleLogout = async () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out of RapidRescue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            setIsLoggingOut(true);
-            try {
-              await logout();
-              router.replace('/(auth)/login');
-            } finally {
-              setIsLoggingOut(false);
-            }
-          },
-        },
-      ]
-    );
+  const handleSosPress = () => {
+    if (isTriggering) return;
+
+    // Duplicate SOS prevention
+    if (emergencyService.hasActiveEmergency()) {
+      router.push('/(emergency)/status');
+      return;
+    }
+
+    setIsTriggering(true);
+    // Navigate straight to automated emergency camera capture screen
+    router.push('/(emergency)/camera');
+    setTimeout(() => setIsTriggering(false), 1000);
   };
 
-  const handleEmergencyTrigger = () => {
-    Alert.alert(
-      'Phase 3 Upcoming',
-      'Phase 2 Authentication is verified! Emergency SOS button will trigger the Front Camera Photo & GPS Location capture in Phase 3.'
-    );
+  const handleSignOut = async () => {
+    Alert.alert('Sign Out', 'Do you wish to sign out of this session?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          await logout();
+        },
+      },
+    ]);
   };
 
   return (
@@ -72,152 +75,141 @@ export default function PatientHomeScreen() {
           <View style={styles.topBarLeft}>
             <View
               style={[
-                styles.avatarCircle,
-                { backgroundColor: colors.primary, borderRadius: borderRadius.full },
+                styles.appIconBadge,
+                { backgroundColor: colors.primary, borderRadius: borderRadius.sm },
               ]}
             >
-              <Ionicons name="person" size={20} color="#FFFFFF" />
+              <Ionicons name="medkit" size={18} color="#FFFFFF" />
             </View>
             <View>
-              <Text style={[styles.greetingLabel, { color: colors.textSecondary }]}>
-                Welcome back,
-              </Text>
-              <Text style={[styles.patientName, { color: colors.text }]}>
-                {patient?.name || 'Patient'}
+              <Text style={[styles.appName, { color: colors.text }]}>RapidRescue</Text>
+              <Text style={[styles.systemStatusText, { color: colors.success }]}>
+                ● Dispatch Ready
               </Text>
             </View>
           </View>
 
+          {isAuthenticated && (
+            <TouchableOpacity
+              style={[
+                styles.profileChip,
+                {
+                  backgroundColor: colors.backgroundElement,
+                  borderColor: colors.cardBorder,
+                  borderRadius: borderRadius.md,
+                },
+              ]}
+              onPress={handleSignOut}
+            >
+              <Ionicons name="person-circle-outline" size={16} color={colors.textSecondary} />
+              <Text style={[styles.profileChipText, { color: colors.textSecondary }]}>
+                {patient?.name ? patient.name.split(' ')[0] : 'Profile'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Readiness Banner */}
+        <View
+          style={[
+            styles.readinessCard,
+            {
+              backgroundColor: colors.card,
+              borderColor: colors.cardBorder,
+              borderRadius: borderRadius.md,
+            },
+          ]}
+        >
+          <View style={styles.readinessRow}>
+            <PulseDot color={colors.success} size={8} />
+            <Text style={[styles.readinessTitle, { color: colors.text }]}>
+              Emergency Response Active
+            </Text>
+          </View>
+          <Text style={[styles.readinessSubtitle, { color: colors.textSecondary }]}>
+            High-priority emergency ambulance channel is online. Single tap initiates instant dispatch.
+          </Text>
+        </View>
+
+        {/* Primary SOS Emergency Trigger */}
+        <View style={styles.sosContainer}>
+          <Text style={[styles.emergencyTitle, { color: colors.primary }]}>
+            🚨 EMERGENCY
+          </Text>
+          <Text style={[styles.emergencySubtitle, { color: colors.textSecondary }]}>
+            Tap once for immediate ambulance assistance
+          </Text>
+
           <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={handleSosPress}
+            disabled={isTriggering}
             style={[
-              styles.logoutButton,
+              styles.sosButton,
               {
-                backgroundColor: colors.backgroundElement,
+                backgroundColor: '#DC2626',
+                shadowColor: '#DC2626',
+                opacity: isTriggering ? 0.8 : 1,
+              },
+            ]}
+          >
+            <View style={styles.sosInnerRing}>
+              <Ionicons name="medical" size={48} color="#FFFFFF" />
+              <Text style={styles.sosButtonText}>SOS</Text>
+              <Text style={styles.sosActionText}>TAP ONCE</Text>
+            </View>
+          </TouchableOpacity>
+
+          <View style={styles.flowExplainer}>
+            <View style={styles.flowItem}>
+              <Ionicons name="camera-outline" size={16} color={colors.accent} />
+              <Text style={[styles.flowText, { color: colors.textMuted }]}>
+                Auto Front & Rear Photos
+              </Text>
+            </View>
+            <Text style={[styles.flowDivider, { color: colors.textMuted }]}>•</Text>
+            <View style={styles.flowItem}>
+              <Ionicons name="navigate-outline" size={16} color={colors.accent} />
+              <Text style={[styles.flowText, { color: colors.textMuted }]}>
+                Auto GPS Detection
+              </Text>
+            </View>
+            <Text style={[styles.flowDivider, { color: colors.textMuted }]}>•</Text>
+            <View style={styles.flowItem}>
+              <Ionicons name="flash-outline" size={16} color={colors.accent} />
+              <Text style={[styles.flowText, { color: colors.textMuted }]}>
+                Instant Dispatch
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Medical Summary if authenticated (Optional, non-blocking) */}
+        {patient && (
+          <View
+            style={[
+              styles.infoCard,
+              {
+                backgroundColor: colors.card,
                 borderColor: colors.cardBorder,
                 borderRadius: borderRadius.md,
               },
             ]}
-            onPress={handleLogout}
-            disabled={isLoggingOut}
           >
-            <Ionicons name="log-out-outline" size={18} color={colors.primary} />
-            <Text style={[styles.logoutText, { color: colors.primary }]}>Sign Out</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Security & Readiness Status Card */}
-        <View
-          style={[
-            styles.statusCard,
-            {
-              backgroundColor: colors.card,
-              borderColor: colors.cardBorder,
-              borderRadius: borderRadius.lg,
-            },
-          ]}
-        >
-          <View style={styles.statusRow}>
-            <View style={styles.statusLeft}>
-              <PulseDot color={colors.success} size={8} />
-              <Text style={[styles.statusTitle, { color: colors.text, marginLeft: 8 }]}>
-                Secure Session Active
+            <View style={styles.infoCardHeader}>
+              <Ionicons name="shield-checkmark-outline" size={18} color={colors.accent} />
+              <Text style={[styles.infoCardTitle, { color: colors.text }]}>
+                Linked Patient Profile
               </Text>
+              {patient.bloodGroup && (
+                <StatusBadge label={patient.bloodGroup} variant="emergency" />
+              )}
             </View>
-            <StatusBadge label="AUTHENTICATED" variant="success" />
-          </View>
-          <Text style={[styles.statusSubtitle, { color: colors.textSecondary }]}>
-            Protected via hardware-backed token storage (expo-secure-store).
-          </Text>
-        </View>
-
-        {/* Central SOS Emergency Trigger (Sets stage for Phase 3) */}
-        <View style={styles.emergencyContainer}>
-          <Text style={[styles.emergencyHeading, { color: colors.text }]}>
-            Emergency Assistance
-          </Text>
-          <Text style={[styles.emergencySubheading, { color: colors.textSecondary }]}>
-            Press the button below to dispatch immediate medical response
-          </Text>
-
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={handleEmergencyTrigger}
-            style={[
-              styles.sosCircle,
-              {
-                backgroundColor: colors.primary,
-                shadowColor: colors.primary,
-              },
-            ]}
-          >
-            <Ionicons name="medical" size={44} color="#FFFFFF" />
-            <Text style={styles.sosText}>SOS</Text>
-            <Text style={styles.sosSubtext}>REQUEST AMBULANCE</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Medical & Emergency Contact Summary Card */}
-        <View
-          style={[
-            styles.profileCard,
-            {
-              backgroundColor: colors.card,
-              borderColor: colors.cardBorder,
-              borderRadius: borderRadius.lg,
-            },
-          ]}
-        >
-          <View style={styles.profileCardHeader}>
-            <Ionicons name="shield-checkmark-outline" size={20} color={colors.accent} />
-            <Text style={[styles.profileCardTitle, { color: colors.text }]}>
-              Registered Medical Profile
+            <Text style={[styles.patientInfoText, { color: colors.textSecondary }]}>
+              {patient.name} • {patient.phone}
             </Text>
           </View>
-
-          <View style={styles.profileGrid}>
-            <View style={styles.profileItem}>
-              <Text style={[styles.profileLabel, { color: colors.textMuted }]}>MOBILE NUMBER</Text>
-              <Text style={[styles.profileValue, { color: colors.text }]}>
-                {patient?.phone || 'Not recorded'}
-              </Text>
-            </View>
-
-            <View style={styles.profileItem}>
-              <Text style={[styles.profileLabel, { color: colors.textMuted }]}>BLOOD GROUP</Text>
-              <Text style={[styles.profileValue, { color: colors.primary }]}>
-                {patient?.bloodGroup || 'Not specified'}
-              </Text>
-            </View>
-          </View>
-
-          {patient?.emergencyContact && (
-            <View
-              style={[
-                styles.emergencyContactCard,
-                {
-                  backgroundColor: colors.backgroundElement,
-                  borderRadius: borderRadius.md,
-                },
-              ]}
-            >
-              <View style={styles.contactHeader}>
-                <Ionicons name="call-outline" size={16} color={colors.success} />
-                <Text style={[styles.contactHeading, { color: colors.text }]}>
-                  Emergency Contact
-                </Text>
-              </View>
-              <Text style={[styles.contactName, { color: colors.text }]}>
-                {patient.emergencyContact.name}{' '}
-                <Text style={{ color: colors.textSecondary, fontWeight: '400' }}>
-                  ({patient.emergencyContact.relationship})
-                </Text>
-              </Text>
-              <Text style={[styles.contactPhone, { color: colors.textSecondary }]}>
-                {patient.emergencyContact.phone}
-              </Text>
-            </View>
-          )}
-        </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -229,162 +221,156 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingBottom: 32,
+    paddingBottom: 24,
   },
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 14,
   },
   topBarLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
-  avatarCircle: {
-    width: 42,
-    height: 42,
+  appIconBadge: {
+    width: 32,
+    height: 32,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  greetingLabel: {
-    fontSize: 12,
-    fontWeight: '500',
+  appName: {
+    fontSize: 16,
+    fontWeight: '800',
   },
-  patientName: {
-    fontSize: 17,
+  systemStatusText: {
+    fontSize: 11,
     fontWeight: '700',
   },
-  logoutButton: {
+  profileChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderWidth: 1,
     gap: 6,
   },
-  logoutText: {
+  profileChipText: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '600',
   },
-  statusCard: {
+  readinessCard: {
     padding: 14,
     borderWidth: 1,
-    marginVertical: 10,
+    marginBottom: 20,
+    marginTop: 4,
   },
-  statusRow: {
+  readinessRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
     marginBottom: 4,
   },
-  statusLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusTitle: {
-    fontSize: 14,
+  readinessTitle: {
+    fontSize: 13,
     fontWeight: '700',
   },
-  statusSubtitle: {
+  readinessSubtitle: {
     fontSize: 12,
+    lineHeight: 18,
   },
-  emergencyContainer: {
+  sosContainer: {
     alignItems: 'center',
-    paddingVertical: 24,
+    paddingVertical: 20,
   },
-  emergencyHeading: {
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  emergencySubheading: {
-    fontSize: 13,
-    marginTop: 4,
-    marginBottom: 24,
+  emergencyTitle: {
+    fontSize: 26,
+    fontWeight: '900',
+    letterSpacing: 1,
     textAlign: 'center',
-    maxWidth: 280,
   },
-  sosCircle: {
-    width: 190,
-    height: 190,
-    borderRadius: 95,
+  emergencySubtitle: {
+    fontSize: 14,
+    marginTop: 6,
+    marginBottom: 32,
+    textAlign: 'center',
+    maxWidth: 290,
+    lineHeight: 20,
+  },
+  sosButton: {
+    width: 220,
+    height: 220,
+    borderRadius: 110,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.45,
-    shadowRadius: 18,
-    elevation: 10,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 12,
+    marginBottom: 32,
   },
-  sosText: {
-    fontSize: 28,
+  sosInnerRing: {
+    width: 196,
+    height: 196,
+    borderRadius: 98,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.4)',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sosButtonText: {
+    fontSize: 36,
     fontWeight: '900',
     color: '#FFFFFF',
     letterSpacing: 2,
     marginTop: 4,
   },
-  sosSubtext: {
-    fontSize: 10,
+  sosActionText: {
+    fontSize: 11,
     fontWeight: '800',
     color: '#FFFFFF',
-    letterSpacing: 1,
+    letterSpacing: 1.2,
     marginTop: 2,
     opacity: 0.9,
   },
-  profileCard: {
-    padding: 18,
-    borderWidth: 1,
-    marginTop: 8,
+  flowExplainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 6,
   },
-  profileCardHeader: {
+  flowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  flowDivider: {
+    fontSize: 12,
+  },
+  flowText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  infoCard: {
+    padding: 14,
+    borderWidth: 1,
+    marginTop: 16,
+  },
+  infoCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 14,
-  },
-  profileCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  profileGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  profileItem: {
-    flex: 1,
-  },
-  profileLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  profileValue: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  emergencyContactCard: {
-    padding: 12,
-    marginTop: 4,
-  },
-  contactHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
     marginBottom: 6,
   },
-  contactHeading: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  contactName: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  contactPhone: {
+  infoCardTitle: {
     fontSize: 13,
-    marginTop: 2,
+    fontWeight: '700',
+    flex: 1,
+  },
+  patientInfoText: {
+    fontSize: 13,
   },
 });
