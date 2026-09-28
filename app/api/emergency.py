@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.database import get_db
 from app.services.emergency_service import EmergencyService
+from app.services.dispatch_service import DispatchService
 from app.utils.file_utils import validate_image_file, save_upload_file
 from app.schemas.emergency import (
     EmergencyCreateResponse,
@@ -27,6 +28,7 @@ async def create_emergency(
     patient_id: Optional[str] = Form(None, description="Patient identifier"),
     device_id: Optional[str] = Form(None, description="Device identifier"),
     patient_device_id: Optional[str] = Form(None, description="Patient or Device identifier"),
+    priority: Optional[str] = Form(None, description="Priority: CRITICAL, HIGH, NORMAL"),
     db: AsyncSession = Depends(get_db),
 ):
     # 1. Identifier validation
@@ -83,7 +85,11 @@ async def create_emergency(
         longitude=longitude,
         accuracy=accuracy,
         timestamp=parsed_timestamp,
+        priority=priority,
     )
+
+    # 7. Automatically dispatch offer to nearest eligible candidate driver
+    await DispatchService.dispatch_to_next_candidate(db, str(emergency.id))
 
     return EmergencyCreateResponse(
         success=True,

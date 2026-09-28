@@ -4,13 +4,25 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.database.database import engine
-from app.api.emergency import router as emergency_router
+from app.api import (
+    emergency_router,
+    auth_router,
+    driver_router,
+    verification_router,
+    admin_router,
+    location_router,
+    dispatch_router,
+    websocket_router,
+    ambulance_router,
+)
 
+# Ensure upload directories exist
 os.makedirs("uploads/emergencies", exist_ok=True)
+os.makedirs("uploads/driver_documents", exist_ok=True)
 
 app = FastAPI(
     title="RapidRescue API",
-    description="Emergency ambulance backend - Patient Module",
+    description="Emergency Ambulance Backend - Patient, Driver & Ambulance Modules",
     version="1.0.0"
 )
 
@@ -19,6 +31,14 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Register API routers
 app.include_router(emergency_router)
+app.include_router(auth_router)
+app.include_router(driver_router)
+app.include_router(verification_router)
+app.include_router(admin_router)
+app.include_router(location_router)
+app.include_router(dispatch_router)
+app.include_router(websocket_router)
+app.include_router(ambulance_router)
 
 
 @app.get("/")

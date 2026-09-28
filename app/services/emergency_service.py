@@ -19,6 +19,7 @@ class EmergencyService:
         longitude: float,
         accuracy: float,
         timestamp: Optional[datetime] = None,
+        priority: Optional[str] = "CRITICAL",
     ) -> Emergency:
         emergency = Emergency(
             patient_id=patient_id,
@@ -28,6 +29,7 @@ class EmergencyService:
             longitude=longitude,
             accuracy=accuracy,
             timestamp=timestamp,
+            priority=(priority or "CRITICAL").upper(),
             created_at=datetime.now(timezone.utc),
             status=EmergencyStatus.SEARCHING.value,
         )
