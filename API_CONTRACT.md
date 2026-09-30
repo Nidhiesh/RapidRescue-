@@ -522,61 +522,171 @@ Authorization: Bearer <your_jwt_access_token>
 
 ---
 
-### 9.3 Emergency Creation & Status Endpoints (Patient / System)
-**Source:** [`app/api/emergency.py`](file:///c:/Users/Nature/Desktop/backend/app/api/emergency.py)
+---
 
-- `POST /api/v1/emergencies`
-  - Creates emergency request (`front_photo`, `rear_photo`, `latitude`, `longitude`, `accuracy`, `priority`), and automatically triggers initial dispatch offer to the nearest eligible driver.
-- `GET /api/v1/emergencies/{emergency_id}`
-  - Fetches emergency status and assigned responder details.
-- `POST /api/v1/emergencies/{emergency_id}/cancel`
-  - Cancels emergency request.
+### 9.4 Patient Photo Authorization Endpoint
+**Endpoint:** `GET /api/v1/emergencies/{emergency_id}/photos/{photo_type}`  
+**Authentication:** Required (`Bearer Token` or `?token=<JWT>`)  
+**Source:** [`app/api/emergency.py`](file:///c:/Users/Nature/Desktop/backend/app/api/emergency.py#L125)
+
+#### Path Parameters:
+- `emergency_id`: Emergency UUID
+- `photo_type`: Allowed values: `"front"`, `"rear"`
+
+#### Authorization Rules:
+- Patient who created the emergency CAN view photos.
+- Assigned driver or offered candidate driver CAN view photos.
+- Unrelated drivers or users CANNOT view photos (`403 Forbidden`).
+
+#### Response `200 OK`:
+Returns raw image bytes (`Content-Type: image/jpeg` or `image/png`).
 
 ---
 
-## 10. REAL-TIME WEBSOCKET INTERFACE
+## 10. REAL-TIME WEBSOCKET INTERACTION & LIVE TRACKING
 
-### Connection & Authentication Handshake
-- **URL:** `ws://localhost:8000/ws/driver` (or `wss://...`)
-- **Handshake Auth Methods:**
-  1. **Query Parameter:** `ws://localhost:8000/ws/driver?token=<jwt_access_token>`
-  2. **Header:** `Authorization: Bearer <jwt_access_token>`
-- **Disconnect Code:** `1008 POLICY_VIOLATION` if token is missing or invalid.
-- **Source:** [`app/api/websocket.py`](file:///c:/Users/Nature/Desktop/backend/app/api/websocket.py#L12) & [`app/websocket/manager.py`](file:///c:/Users/Nature/Desktop/backend/app/websocket/manager.py)
+### 10.1 Connections & Authentication Handshake
+
+#### Driver WebSocket:
+- **URL:** `ws://localhost:8000/ws/driver?token=<jwt_access_token>`
+- **Source:** [`app/api/websocket.py`](file:///c:/Users/Nature/Desktop/backend/app/api/websocket.py#L12)
+
+#### Patient WebSocket:
+- **URL:** `ws://localhost:8000/ws/patient?token=<jwt_access_token>&emergency_id=<uuid>`
+- **Source:** [`app/api/websocket.py`](file:///c:/Users/Nature/Desktop/backend/app/api/websocket.py#L52)
 
 ---
 
-### Implemented WebSocket Events
+### 10.2 Implemented WebSocket Events
 
 #### Event 1: `EMERGENCY_DISPATCH` (Server → Driver App)
-Pushed automatically to the nearest eligible candidate driver when an emergency dispatch offer is assigned to them.
+Pushed automatically to the assigned/offered candidate driver when an emergency is dispatched. Contains full patient details and location.
 
 ```json
 {
   "type": "EMERGENCY_DISPATCH",
   "data": {
     "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
-    "pickup": {
+    "emergencyType": "CARDIAC_ARREST",
+    "priority": "CRITICAL",
+    "patient": {
+      "name": "Jane Doe",
+      "phone": "9876543210",
+      "photoUrl": "http://localhost:8000/api/v1/emergencies/edeafc80-e5f7-4678-af2e-4651484ae48f/photos/front"
+    },
+    "pickupLocation": {
       "latitude": 12.9716,
       "longitude": 77.5946
     },
-    "priority": "CRITICAL",
+    "distanceKm": 1.25,
+    "etaMinutes": 3.4,
     "createdAt": "2026-09-28T09:40:00.000Z",
     "responseDeadline": "2026-09-28T09:40:20.000Z",
-    "timeoutSeconds": 20,
-    "distanceKm": 1.25
+    "timeoutSeconds": 20
   }
 }
 ```
-*Note on `priority` & `timeoutSeconds`:*
-- `CRITICAL` = 20 seconds
-- `HIGH` = 40 seconds
-- `NORMAL` = 60 seconds
 
 ---
 
-#### Event 2: `DISPATCH_TIMEOUT` (Server → Driver App)
-Pushed to the candidate driver if they fail to respond before `responseDeadline`.
+#### Event 2: `DRIVER_ASSIGNED` (Server → Patient App)
+Pushed to patient when a driver accepts the emergency offer.
+
+```json
+{
+  "event": "DRIVER_ASSIGNED",
+  "data": {
+    "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
+    "driver": {
+      "driverId": "DRV-8f3a9b1c2d4e",
+      "name": "John Doe"
+    },
+    "ambulance": {
+      "ambulanceId": "AMB-4a2b6c8d1e2f",
+      "registrationNumber": "KA-01-EQ-9999",
+      "ambulanceType": "BLS"
+    },
+    "assignedAt": "2026-09-28T09:40:05.000Z"
+  }
+}
+```
+
+---
+
+#### Event 3: `PATIENT_LOCATION` (Server → Driver App)
+Pushed to the driver after accepting the emergency so they can plot the patient marker.
+
+```json
+{
+  "event": "PATIENT_LOCATION",
+  "data": {
+    "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
+    "latitude": 12.9716,
+    "longitude": 77.5946,
+    "accuracy": 5.0
+  }
+}
+```
+
+---
+
+#### Event 4: `DRIVER_LOCATION_UPDATE` (Server → Patient App)
+Pushed to patient whenever assigned driver posts location update (`POST /api/v1/drivers/me/location`).
+
+```json
+{
+  "event": "DRIVER_LOCATION_UPDATE",
+  "data": {
+    "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
+    "driverId": "DRV-8f3a9b1c2d4e",
+    "ambulanceId": "AMB-4a2b6c8d1e2f",
+    "latitude": 12.9718,
+    "longitude": 77.5948,
+    "accuracy": 5.0,
+    "speedMps": 10.0,
+    "headingDegrees": 90.0,
+    "recordedAt": "2026-09-28T09:40:15.000Z"
+  }
+}
+```
+
+---
+
+#### Event 5: `ETA_UPDATE` (Server → Driver & Patient Apps)
+Pushed to both driver and patient when driver location changes during active emergency tracking.
+
+```json
+{
+  "event": "ETA_UPDATE",
+  "data": {
+    "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
+    "distanceKm": 0.85,
+    "etaMinutes": 2.1,
+    "updatedAt": "2026-09-28T09:40:15.000Z"
+  }
+}
+```
+
+---
+
+#### Event 6: `EMERGENCY_COMPLETED` / `EMERGENCY_CANCELLED` (Server → Driver & Patient Apps)
+Pushed when mission ends or is cancelled by patient. Real-time location tracking terminates upon receiving this event.
+
+```json
+{
+  "event": "EMERGENCY_COMPLETED",
+  "data": {
+    "emergencyId": "edeafc80-e5f7-4678-af2e-4651484ae48f",
+    "status": "COMPLETED",
+    "completedAt": "2026-09-28T09:50:00.000Z"
+  }
+}
+```
+
+---
+
+#### Event 7: `DISPATCH_TIMEOUT` (Server → Driver App)
+Pushed to candidate driver if response deadline expires before accept/reject.
 
 ```json
 {
@@ -590,7 +700,7 @@ Pushed to the candidate driver if they fail to respond before `responseDeadline`
 
 ---
 
-#### Event 3: `DISPATCH_RESPONSE_ACK` (Server → Driver App)
+#### Event 8: `DISPATCH_RESPONSE_ACK` (Server → Driver App)
 Pushed to driver upon successful execution of `POST /api/v1/dispatch/respond`.
 
 ```json
@@ -606,8 +716,8 @@ Pushed to driver upon successful execution of `POST /api/v1/dispatch/respond`.
 
 ---
 
-#### Event 4: `REQUEST_UPDATE` (Server → Driver App)
-Pushed to driver when emergency status updates (e.g., trip completed).
+#### Event 9: `REQUEST_UPDATE` (Server → Driver App)
+Pushed to driver when emergency state transitions.
 
 ```json
 {

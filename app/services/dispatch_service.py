@@ -11,8 +11,10 @@ from app.models.driver import Driver, VerificationStatus, DutyStatus, Availabili
 from app.models.driver_location import DriverLocation
 from app.models.emergency import Emergency, EmergencyStatus
 from app.models.emergency_response import EmergencyResponse, ResponseAction
+from app.models.ambulance import Ambulance
 from app.utils.distance import haversine_distance_km
 from app.websocket.manager import manager as ws_manager
+from app.services.eta_service import ETAService
 
 logger = logging.getLogger("dispatch_service")
 
@@ -81,6 +83,8 @@ class DispatchService:
     async def dispatch_to_next_candidate(
         db: AsyncSession,
         emergency_id_str: str,
+        traffic_level: Optional[int] = None,
+        avg_speed_kmh: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         try:
             emergency_uuid = uuid.UUID(emergency_id_str)
@@ -126,20 +130,41 @@ class DispatchService:
         emergency.response_deadline = deadline
         await db.commit()
 
-        # Send WebSocket offer notification to candidate driver
+        # Compute optional ETA via ML model if traffic/speed inputs are provided
+        eta_minutes = ETAService.predict_eta_safe(
+            distance_km=dist_km,
+            traffic_level=traffic_level,
+            avg_speed_kmh=avg_speed_kmh,
+            hour=now.hour,
+            day_of_week=now.weekday(),
+        )
+
+        # Send WebSocket offer notification to candidate driver with complete details
         created_at_iso = emergency.created_at.isoformat() if emergency.created_at else now.isoformat()
         ws_payload = {
             "emergencyId": str(emergency.id),
+            "emergencyType": emergency.emergency_type or "MEDICAL_EMERGENCY",
+            "priority": priority_upper,
+            "patient": {
+                "name": emergency.patient_name or emergency.patient_id,
+                "phone": emergency.patient_phone or "",
+                "photoUrl": f"/api/v1/emergencies/{emergency.id}/photos/front"
+            },
+            "pickupLocation": {
+                "latitude": emergency.latitude,
+                "longitude": emergency.longitude,
+            },
             "pickup": {
                 "latitude": emergency.latitude,
                 "longitude": emergency.longitude,
             },
-            "priority": priority_upper,
             "createdAt": created_at_iso,
             "responseDeadline": deadline.isoformat(),
             "timeoutSeconds": timeout_seconds,
             "distanceKm": round(dist_km, 2),
         }
+        if eta_minutes is not None:
+            ws_payload["etaMinutes"] = eta_minutes
 
         await ws_manager.send_event_to_driver(
             driver_id=driver.id,
@@ -161,6 +186,7 @@ class DispatchService:
             "distance_km": dist_km,
             "timeout_seconds": timeout_seconds,
             "response_deadline": deadline,
+            "eta_minutes": eta_minutes,
         }
 
     @staticmethod
@@ -328,6 +354,38 @@ class DispatchService:
             }
         )
 
+        if action_upper == ResponseAction.ACCEPT.value:
+            # Fetch driver ambulance profile
+            amb_stmt = select(Ambulance).where(Ambulance.driver_id == driver.id)
+            ambulance = (await db.execute(amb_stmt)).scalar_one_or_none()
+
+            # 1. Send DRIVER_ASSIGNED event to Patient WebSocket
+            driver_assigned_payload = {
+                "emergencyId": request_id_str,
+                "driver": {
+                    "driverId": driver.id,
+                    "name": driver.full_name
+                },
+                "ambulance": {
+                    "ambulanceId": ambulance.id if ambulance else None,
+                    "registrationNumber": ambulance.registration_number if ambulance else None,
+                    "ambulanceType": ambulance.ambulance_type if ambulance else "BLS"
+                },
+                "assignedAt": now.isoformat()
+            }
+            await ws_manager.send_event_to_patient(key=request_id_str, event_type="DRIVER_ASSIGNED", data=driver_assigned_payload)
+            if emergency.patient_id:
+                await ws_manager.send_event_to_patient(key=emergency.patient_id, event_type="DRIVER_ASSIGNED", data=driver_assigned_payload)
+
+            # 2. Send PATIENT_LOCATION event to Driver WebSocket
+            patient_loc_payload = {
+                "emergencyId": request_id_str,
+                "latitude": emergency.latitude,
+                "longitude": emergency.longitude,
+                "accuracy": emergency.accuracy
+            }
+            await ws_manager.send_event_to_driver(driver_id=driver.id, event_type="PATIENT_LOCATION", data=patient_loc_payload)
+
         # If REJECT or TIMEOUT, trigger dispatch to next candidate automatically
         if action_upper in [ResponseAction.REJECT.value, ResponseAction.TIMEOUT.value]:
             await DispatchService.dispatch_to_next_candidate(db, request_id_str)
@@ -371,13 +429,29 @@ class DispatchService:
         await db.commit()
         await db.refresh(emergency)
 
+        completed_payload = {
+            "requestId": request_id_str,
+            "emergencyId": request_id_str,
+            "status": "COMPLETED",
+            "completedAt": now.isoformat()
+        }
+
+        # Send status update events to Driver and Patient
         await ws_manager.send_event_to_driver(
             driver_id=driver.id,
             event_type="REQUEST_UPDATE",
-            data={
-                "requestId": request_id_str,
-                "status": "COMPLETED"
-            }
+            data=completed_payload
         )
+        await ws_manager.send_event_to_patient(
+            key=request_id_str,
+            event_type="EMERGENCY_COMPLETED",
+            data=completed_payload
+        )
+        if emergency.patient_id:
+            await ws_manager.send_event_to_patient(
+                key=emergency.patient_id,
+                event_type="EMERGENCY_COMPLETED",
+                data=completed_payload
+            )
 
         return emergency

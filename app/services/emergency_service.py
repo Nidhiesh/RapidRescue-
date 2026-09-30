@@ -20,6 +20,10 @@ class EmergencyService:
         accuracy: float,
         timestamp: Optional[datetime] = None,
         priority: Optional[str] = "CRITICAL",
+        patient_name: Optional[str] = None,
+        patient_phone: Optional[str] = None,
+        pickup_address: Optional[str] = None,
+        emergency_type: Optional[str] = "MEDICAL_EMERGENCY",
     ) -> Emergency:
         emergency = Emergency(
             patient_id=patient_id,
@@ -30,6 +34,10 @@ class EmergencyService:
             accuracy=accuracy,
             timestamp=timestamp,
             priority=(priority or "CRITICAL").upper(),
+            patient_name=patient_name,
+            patient_phone=patient_phone,
+            pickup_address=pickup_address,
+            emergency_type=emergency_type or "MEDICAL_EMERGENCY",
             created_at=datetime.now(timezone.utc),
             status=EmergencyStatus.SEARCHING.value,
         )
